@@ -60,11 +60,11 @@ int disk_read( struct disk *d, int disk_block, char *data )
 	// check the condition of the page 
 	if (page == -1) { 
 		fprintf(stderr, "disk_read: block %d has not beem written just yet...\n", disk_block);
-		return -1; 
+		return -1;  // block has not been written or page is not valid anymore 
 	}
 
 	// read from flash 
-	flash_read(d->flash_drive, page, data); 
+	flash_read(d->flash_drive, page, data); // retrieve the data 
 	d->nreads++;
 	return 0;
 }
@@ -92,7 +92,7 @@ int disk_write( struct disk *d, int disk_block, const char *data )
 	int freePage = -1;
 	int npages = flash_npages(d->flash_drive);
 	for (int i = 0; i < npages; i++) { 
-		if (d->status[i] == 0) {// free
+		if (d->status[i] == 0) { // free!
 			freePage = i; 
 			break;
 		}
@@ -102,7 +102,7 @@ int disk_write( struct disk *d, int disk_block, const char *data )
 	if (freePage == -1) { 
 		fprintf(stderr, "disk_write: there are no free pages available & THERE IS NO WAY TO CLEAN STALE PAGES RN -- TODO! \n");
 		return -1; // exit with error 
-	}
+	} // TODO -- add logic for cleaning up stale pages 
 
 	// write to free page (if found)
 	flash_write(d->flash_drive, freePage, data);
