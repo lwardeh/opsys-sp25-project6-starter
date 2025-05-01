@@ -19,6 +19,9 @@ struct disk {
 	struct flash_drive *flash_drive;
 	int nreads;
 	int nwrites;
+	// added features below 
+	int * b2p; // track the disk_block to flash_page mapping 
+	int * status; // [0,1,2] = [free, valid, stale]
 };
 
 /*
@@ -32,6 +35,9 @@ struct disk * disk_create( struct flash_drive *f, int disk_blocks )
 	d->flash_drive = f;
 	d->nreads = 0;
 	d->nwrites = 0;
+	// new initializations 
+	d->b2p = -1;
+	d->status = 0;
 	return d;
 }
 
@@ -43,10 +49,20 @@ Go ahead and add or change things here as needed.
 int disk_read( struct disk *d, int disk_block, char *data )
 {
 	printf("disk_read: block %d\n",disk_block);
-
 	/* A dummy operation that won't get far: read the same page # as block # */
-	flash_read(d->flash_drive,disk_block,data);
+	// flash_read(d->flash_drive,disk_block,data);
 
+	// find the right physical flash page 
+	int page = d->b2p[disk_block];
+
+	// check the condition of the page 
+	if (page == -1) { 
+		fprintf(stderr, "disk_read: block %d has not beem written just yet...\n");
+		return -1; 
+	}
+
+	// read from flash 
+	flash_read(d->flash_drive, page, data); 
 	d->nreads++;
 	return 0;
 }
