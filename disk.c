@@ -36,8 +36,10 @@ struct disk * disk_create( struct flash_drive *f, int disk_blocks )
 	d->nreads = 0;
 	d->nwrites = 0;
 	// new initializations 
-	d->b2p = -1;
-	d->status = 0;
+	d->b2p  = malloc(sizeof(int) * disk_blocks);
+	for (int i = 0; i < disk_blocks; i++) d->b2p[i] = -1;
+	d->status = malloc(sizeof(int) * flash_npages(f));
+	for (int i = 0; i < flash_npages(f); i++) d->status[i] = 0;
 	return d;
 }
 
@@ -57,7 +59,7 @@ int disk_read( struct disk *d, int disk_block, char *data )
 
 	// check the condition of the page 
 	if (page == -1) { 
-		fprintf(stderr, "disk_read: block %d has not beem written just yet...\n");
+		fprintf(stderr, "disk_read: block %d has not beem written just yet...\n", disk_block);
 		return -1; 
 	}
 
@@ -77,7 +79,37 @@ int disk_write( struct disk *d, int disk_block, const char *data )
 	printf("disk_write: block %d\n",disk_block);
 
 	/* A dummy operation that won't get far: write the same page # as block # */
-	flash_write(d->flash_drive,disk_block,data);
+	// flash_write(d->flash_drive,disk_block,data);
+	
+	// check for old mapping
+		// if there is an old mapping, mark the page as STALE (2)
+	int oldPage = d->b2p[disk_block];
+	if (oldPage != -1) { 
+		d->status[oldPage] = 2; // stale!
+	}
+
+	// find a free flash page for the block 
+	int freePage = -1;
+	int npages = flash_npages(d->flash_drive);
+	for (int i = 0; i < npages; i++) { 
+		if (d->status[i] == 0) {// free
+			freePage = i; 
+			break;
+		}
+	}
+
+	// if a free page is not found
+	if (freePage == -1) { 
+		fprintf(stderr, "disk_write: there are no free pages available & THERE IS NO WAY TO CLEAN STALE PAGES RN -- TODO! \n");
+		return -1; // exit with error 
+	}
+
+	// write to free page (if found)
+	flash_write(d->flash_drive, freePage, data);
+
+	// update the mappings to match 
+	d->b2p[disk_block] = freePage; 
+	d->status[freePage] = 1; // mark as wrritten 
 
 	d->nwrites++;
 	return 0;
