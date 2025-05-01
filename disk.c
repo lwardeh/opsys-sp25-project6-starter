@@ -41,32 +41,25 @@ int block_index(struct disk *d, int page) {
 This function is a garbage collection routine to reclaim space by erasing blocks with stale pages
 */
 void garbage_collection(struct disk *d) {
-    int required_free_pages = 20;  // keep cleaning until we get this many free pages
+    int required_free_pages = 20;
     int num_blocks = d->flash_pages / d->pages_per_block;
 
     while (1) {
-        // Count current free pages
         int free_pages = 0;
         for (int i = 0; i < d->flash_pages; i++) {
-            if (d->status[i] == 0)
-                free_pages++;
+            if (d->status[i] == 0) free_pages++;
         }
-        if (free_pages >= required_free_pages)
-            break;
+        if (free_pages >= required_free_pages) break;
 
-        // Find the block with the most stale pages
         int best_block = -1;
         int max_stale = -1;
 
         for (int b = 0; b < num_blocks; b++) {
             int start = b * d->pages_per_block;
             int stale_count = 0;
-
             for (int i = start; i < start + d->pages_per_block; i++) {
-                if (d->status[i] == 2)
-                    stale_count++;
+                if (d->status[i] == 2) stale_count++;
             }
-
             if (stale_count > max_stale) {
                 best_block = b;
                 max_stale = stale_count;
@@ -82,17 +75,16 @@ void garbage_collection(struct disk *d) {
         int end   = start + d->pages_per_block;
 
         bool can_erase = true;
-        int valid_moved = 0;
         int valid_total = 0;
+        int valid_moved = 0;
+        int moved_pages[d->pages_per_block];  // to track pages we moved
 
-        // First count total valid pages
+        // Count valid pages
         for (int i = start; i < end; i++) {
-            if (d->status[i] == 1) {
-                valid_total++;
-            }
+            if (d->status[i] == 1) valid_total++;
         }
 
-        // Try to move all valid pages
+        // Relocate valid pages, collect stale list
         for (int i = start; i < end; i++) {
             if (d->status[i] == 1) {
                 char buf[DISK_BLOCK_SIZE];
@@ -121,26 +113,30 @@ void garbage_collection(struct disk *d) {
                     }
                 }
 
-                d->status[i] = 2;
-                valid_moved++;
+                moved_pages[valid_moved++] = i;  // save to mark stale later
             }
         }
 
-        // Only erase if all valid pages were successfully moved
+        // Only erase if all pages were moved
         if (can_erase && valid_moved == valid_total) {
+            for (int m = 0; m < valid_moved; m++) {
+                d->status[moved_pages[m]] = 2;  // mark old as stale now
+            }
+
             flash_erase(d->flash_drive, best_block);
-			d->eraseCounts[best_block]++;
+            d->eraseCounts[best_block]++;
+
             for (int i = start; i < end; i++) {
-                d->status[i] = 0;
+                if (d->status[i] != 1) {  // don't overwrite newly moved ones
+                    d->status[i] = 0;
+                }
             }
         } else {
-            // Skip this block and retry with another
+            // Failed to move all valid pages
             continue;
         }
     }
 }
-
-
 
 
 /*
@@ -214,70 +210,62 @@ Write a disk block through the flash translation layer.
 int disk_write(struct disk *d, int disk_block, const char *data) {
     printf("disk_write: block %d\n", disk_block);
 
-    // Mark old page as stale if already mapped
+    // Save old page before doing anything
     int old_page = d->b2p[disk_block];
-    if (old_page != -1) {
-        d->status[old_page] = 2;  // mark old flash page as stale
+
+    // Trigger GC if low on free space
+    int free_count = 0;
+    for (int i = 0; i < d->flash_pages; i++) {
+        if (d->status[i] == 0) free_count++;
+    }
+    if (free_count < 10) {
+        garbage_collection(d);
     }
 
-    // === Wear-Leveling: Find free page in block with lowest erase count ===
+    // pick free page in block with lowest erase count 
     int free_page = -1;
     int min_erase = __INT_MAX__;
 
     for (int i = 0; i < d->flash_pages; i++) {
         if (d->status[i] == 0) {
             int block = i / d->pages_per_block;
-            if (d->erase_counts[block] < min_erase) {
-                min_erase = d->erase_counts[block];
+            if (d->eraseCounts[block] < min_erase) {
+                min_erase = d->eraseCounts[block];
                 free_page = i;
             }
         }
     }
 
-    // If no free page found, run garbage collection (try twice)
+    // If still no free page, run GC again
     if (free_page == -1) {
         garbage_collection(d);
-
-        // Retry wear-leveled page selection after GC
         min_erase = __INT_MAX__;
         for (int i = 0; i < d->flash_pages; i++) {
             if (d->status[i] == 0) {
                 int block = i / d->pages_per_block;
-                if (d->erase_counts[block] < min_erase) {
-                    min_erase = d->erase_counts[block];
+                if (d->eraseCounts[block] < min_erase) {
+                    min_erase = d->eraseCounts[block];
                     free_page = i;
                 }
             }
         }
-    }
-
-    if (free_page == -1) {
-        garbage_collection(d);  // Try a second time
-
-        min_erase = __INT_MAX__;
-        for (int i = 0; i < d->flash_pages; i++) {
-            if (d->status[i] == 0) {
-                int block = i / d->pages_per_block;
-                if (d->erase_counts[block] < min_erase) {
-                    min_erase = d->erase_counts[block];
-                    free_page = i;
-                }
-            }
+        if (free_page == -1) {
+            fprintf(stderr, "disk_write: no free pages even after GC.\n");
+            return -1;
         }
-    }
-
-    if (free_page == -1) {
-        fprintf(stderr, "disk_write: out of space even after repeated GC.\n");
-        abort();
     }
 
     // Perform the write
     flash_write(d->flash_drive, free_page, data);
-
-    // Update mappings and status
     d->b2p[disk_block] = free_page;
     d->status[free_page] = 1;
     d->nwrites++;
+
+    // Mark old page as stale, safely (after the write)
+    if (old_page != -1 && old_page != free_page) {
+        d->status[old_page] = 2;
+    }
+
     return 0;
 }
 
